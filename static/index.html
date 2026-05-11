@@ -1,0 +1,408 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Filmy</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Apply film stock presets to your photos and export them.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300;1,400&display=swap" rel="stylesheet">
+  <link href="./static/style.css" rel="stylesheet">
+</head>
+<body>
+ 
+  <header>
+    <div class="logo">Filmy</div>
+    <div class="logo-sub">Film Stock Emulator</div>
+  </header>
+ 
+  <main>
+ 
+    <!-- ── Image display ── -->
+    <div id="image-display">
+      <div id="upload-prompt" onclick="document.getElementById('upload').click()">
+        <div class="icon">⬡</div>
+        <p>Drop a photo or click to upload</p>
+        <span>.jpg · .jpeg · .png</span>
+      </div>
+ 
+      <div id="canvas-container">
+        <canvas id="preview-canvas"></canvas>
+      </div>
+ 
+      <canvas id="source-canvas"></canvas>
+ 
+      <div id="processing-overlay">
+        <div class="spinner"></div>
+        <span>Developing film…</span>
+      </div>
+    </div>
+ 
+    <!-- ── Image meta bar ── -->
+    <div id="image-options">
+      <div class="meta-item">FILE <span id="meta-name">—</span></div>
+      <div class="meta-item">SIZE <span id="meta-size">—</span></div>
+      <div class="meta-item">PRESET <span id="meta-preset">None</span></div>
+    </div>
+ 
+    <!-- ── Sidebar ── -->
+    <div id="sidebar">
+ 
+      <!-- Upload -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Image</div>
+        <input type="file" id="upload" accept=".jpg,.jpeg,.png">
+        <button class="upload-btn" onclick="document.getElementById('upload').click()">
+          ＋ Load Photo
+        </button>
+        <div id="filename">No file loaded</div>
+      </div>
+ 
+      <!-- Presets -->
+      <div class="sidebar-section" style="flex:1">
+        <div class="sidebar-label">Film Stock</div>
+        <div id="preset-list">
+          <div class="preset-item preset-none active" data-preset="none">
+            <span>None</span>
+            <span class="preset-tag">—</span>
+          </div>
+          <div class="preset-item" data-preset="portra400">
+            <span>Kodak Portra 400</span>
+            <span class="preset-tag">COLOR</span>
+          </div>
+          <div class="preset-item" data-preset="gold200">
+            <span>Kodak Gold 200</span>
+            <span class="preset-tag">COLOR</span>
+          </div>
+          <div class="preset-item" data-preset="ektar100">
+            <span>Kodak Ektar 100</span>
+            <span class="preset-tag">COLOR</span>
+          </div>
+          <div class="preset-item" data-preset="velvia100">
+            <span>Fujifilm Velvia 100</span>
+            <span class="preset-tag">COLOR</span>
+          </div>
+          <div class="preset-item" data-preset="provia">
+            <span>Fuji Provia 100</span>
+            <span class="preset-tag">COLOR</span>
+          </div>
+          <div class="preset-item" data-preset="astia">
+            <span>Fujifilm Astia</span>
+            <span class="preset-tag">COLOR</span>
+          </div>
+          <!-- <div class="preset-item" data-preset="optima">
+            <span>Agfa Optima</span>
+            <span class="preset-tag">Color</span>
+          </div> -->
+        </div>
+      </div>
+ 
+      <!-- Intensity -->
+      <div class="sidebar-section">
+        <div class="sidebar-label">Intensity</div>
+        <div class="slider-row">
+          <input type="range" id="intensity" min="0" max="100" value="100" step="1">
+          <span class="slider-value" id="intensity-val">100%</span>
+        </div>
+      </div>
+ 
+      <!-- Export -->
+      <button class="export-btn" id="export-btn" disabled>Export JPEG</button>
+ 
+    </div>
+  </main>
+ 
+  <script>
+
+    const lutCache = {};
+
+    // ── State ──────────────────────────────────────────────────
+    let originalImageData = null;
+    let currentPreset = 'none';
+    let intensity = 1.0;
+    let imageLoaded = false;
+ 
+    // ── DOM refs ───────────────────────────────────────────────
+    const uploadInput   = document.getElementById('upload');
+    const uploadPrompt  = document.getElementById('upload-prompt');
+    const canvasContainer = document.getElementById('canvas-container');
+    const previewCanvas = document.getElementById('preview-canvas');
+    const sourceCanvas  = document.getElementById('source-canvas');
+    const processingOverlay = document.getElementById('processing-overlay');
+    const previewCtx    = previewCanvas.getContext('2d', { willReadFrequently: true });
+    const sourceCtx     = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    const exportBtn     = document.getElementById('export-btn');
+    const intensitySlider = document.getElementById('intensity');
+    const intensityVal  = document.getElementById('intensity-val');
+    const filenameEl    = document.getElementById('filename');
+    const metaName      = document.getElementById('meta-name');
+    const metaSize      = document.getElementById('meta-size');
+    const metaPreset    = document.getElementById('meta-preset');
+ 
+    // ── File upload ────────────────────────────────────────────
+    uploadInput.addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      loadImage(file);
+    });
+ 
+    // Drag and drop
+    const display = document.getElementById('image-display');
+    display.addEventListener('dragover', e => { e.preventDefault(); });
+    display.addEventListener('drop', e => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith('image/')) loadImage(file);
+    });
+ 
+    function loadImage(file) {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = function() {
+        sourceCanvas.width  = img.naturalWidth;
+        sourceCanvas.height = img.naturalHeight;
+        sourceCtx.drawImage(img, 0, 0);
+        originalImageData = sourceCtx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
+ 
+        previewCanvas.width  = img.naturalWidth;
+        previewCanvas.height = img.naturalHeight;
+ 
+        uploadPrompt.style.display = 'none';
+        canvasContainer.style.display = 'flex';
+        imageLoaded = true;
+        exportBtn.disabled = false;
+ 
+        filenameEl.textContent = file.name;
+        metaName.textContent = file.name.length > 20 ? file.name.slice(0, 18) + '…' : file.name;
+        metaSize.textContent = img.naturalWidth + ' × ' + img.naturalHeight;
+ 
+        URL.revokeObjectURL(url);
+        if (imageLoaded) applyCurrentPreset();
+      };
+      img.src = url;
+    }
+ 
+    // ── Preset selection ───────────────────────────────────────
+    document.getElementById('preset-list').addEventListener('click', function(e) {
+      const item = e.target.closest('.preset-item');
+      if (!item) return;
+      document.querySelectorAll('.preset-item').forEach(el => el.classList.remove('active'));
+      item.classList.add('active');
+      currentPreset = item.dataset.preset;
+      metaPreset.textContent = item.querySelector('span:first-child').textContent;
+      if (imageLoaded) applyCurrentPreset();
+    });
+ 
+    // ── Intensity ──────────────────────────────────────────────
+    intensitySlider.addEventListener('input', function() {
+      intensity = this.value / 100;
+      intensityVal.textContent = this.value + '%';
+      if (imageLoaded) applyCurrentPreset();
+    });
+ 
+    // ── LUT Application ────────────────────────────────────────
+    // Each preset is defined as a pixel-manipulation function
+    // operating on normalized [0,1] RGB values.
+ 
+    const PRESETS = {
+  none:          { label: 'None',              tag: '—',     file: null },
+  portra400:     { label: 'Kodak Portra 400',  tag: 'COLOR', file: 'static/luts/KodakPortra400.cube' },
+  gold200:     { label: 'Kodak Gold 200',  tag: 'COLOR', file: 'static/luts/KodakGold200.cube' },
+  ektar100:      { label: 'Kodak Ektar 100',   tag: 'COLOR', file: 'static/luts/KodakEktar100.cube' },
+  velvia100:      { label: 'Fuji Velvia 100',    tag: 'COLOR', file: 'static/luts/FujiVelvia100.cube' },
+  optima:           { label: 'Agfa Optima',   tag: 'COLOR',   file: 'static/luts/AgfaOptima.cube' },
+  provia: { label: 'Fuji Provia',    tag: 'COLOR', file: 'static/luts/FujiProvia.cube' },
+  astia: { label: 'Fuji Astia',    tag: 'COLOR', file: 'static/luts/FujiAstia.cube' },
+};
+
+
+function parseCube(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  let size = 0;
+  const data = [];
+
+  for (const line of lines) {
+    if (line.startsWith('LUT_3D_SIZE')) {
+      size = parseInt(line.split(/\s+/)[1]);
+      continue;
+    }
+    // Skip other header keywords
+    if (/^[A-Z_]+/.test(line) && isNaN(parseFloat(line))) continue;
+
+    const parts = line.split(/\s+/).map(Number);
+    if (parts.length === 3 && !parts.some(isNaN)) {
+      data.push(parts[0], parts[1], parts[2]);
+    }
+  }
+
+  return { size, data: new Float32Array(data) };
+}
+
+function applyLUT(r, g, b, lut) {
+  const s  = lut.size - 1;
+  const ri = r * s,  gi = g * s,  bi = b * s;
+  const r0 = Math.floor(ri), r1 = Math.min(r0 + 1, s);
+  const g0 = Math.floor(gi), g1 = Math.min(g0 + 1, s);
+  const b0 = Math.floor(bi), b1 = Math.min(b0 + 1, s);
+  const rf = ri - r0, gf = gi - g0, bf = bi - b0;
+  const n  = lut.size;
+
+  function idx(ri, gi, bi) { return (bi * n * n + gi * n + ri) * 3; }
+
+  // Trilinear interpolation across the 8 surrounding nodes
+  const out = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const c000 = lut.data[idx(r0,g0,b0)+c], c100 = lut.data[idx(r1,g0,b0)+c];
+    const c010 = lut.data[idx(r0,g1,b0)+c], c110 = lut.data[idx(r1,g1,b0)+c];
+    const c001 = lut.data[idx(r0,g0,b1)+c], c101 = lut.data[idx(r1,g0,b1)+c];
+    const c011 = lut.data[idx(r0,g1,b1)+c], c111 = lut.data[idx(r1,g1,b1)+c];
+    out[c] =
+      c000*(1-rf)*(1-gf)*(1-bf) + c100*rf*(1-gf)*(1-bf) +
+      c010*(1-rf)*gf*(1-bf)     + c110*rf*gf*(1-bf)     +
+      c001*(1-rf)*(1-gf)*bf     + c101*rf*(1-gf)*bf     +
+      c011*(1-rf)*gf*bf         + c111*rf*gf*bf;
+  }
+  return out;
+}
+
+
+    // ── Apply preset ───────────────────────────────────────────
+    
+async function applyCurrentPreset() {
+  console.log('originalImageData:', originalImageData);
+  console.log('imageLoaded:', imageLoaded);
+  if (!imageLoaded || !originalImageData) return;
+  processingOverlay.style.display = 'flex';
+
+  // No preset — just show original
+  if (currentPreset === 'none') {
+    previewCtx.putImageData(originalImageData, 0, 0);
+    processingOverlay.style.display = 'none';
+    return;
+  }
+
+  // Load and cache the LUT
+  if (!lutCache[currentPreset]) {
+    const file = PRESETS[currentPreset].file;
+    try {
+      const res  = await fetch(file);
+      const text = await res.text();
+      lutCache[currentPreset] = parseCube(text);
+      // console.log('LUT size:', lutCache[currentPreset].size);
+      // console.log('First triplet:', lutCache[currentPreset].data[0], lutCache[currentPreset].data[1], lutCache[currentPreset].data[2]);
+      // console.log('Last triplet:', lutCache[currentPreset].data.at(-3), lutCache[currentPreset].data.at(-2), lutCache[currentPreset].data.at(-1));
+    } catch (err) {
+      console.error('Failed to load LUT:', file, err);
+      processingOverlay.style.display = 'none';
+      return;
+    }
+  }
+
+  const lut = lutCache[currentPreset];
+
+  // Process pixels
+  setTimeout(() => {
+  const src = originalImageData;
+  const out = new ImageData(new Uint8ClampedArray(src.data), src.width, src.height);
+  const data = out.data;
+
+  // LUT
+  for (let i = 0; i < data.length; i += 4) {
+  const r = data[i]   / 255;
+  const g = data[i+1] / 255;
+  const b = data[i+2] / 255;
+
+  // First pass — stay in float
+  let [nr, ng, nb] = applyLUT(r, g, b, lut);
+  // Second pass — still in float
+  let [nr2, ng2, nb2] = applyLUT(nr, ng, nb, lut);
+
+  // Only quantize to 8-bit at the very end
+  data[i]   = Math.round((r + (nr2 - r) * intensity) * 255);
+  data[i+1] = Math.round((g + (ng2 - g) * intensity) * 255);
+  data[i+2] = Math.round((b + (nb2 - b) * intensity) * 255);
+}
+
+  // Lifted blacks
+  for (let i = 0; i < data.length; i += 4) {
+    data[i]     = data[i]     * (1 - 0.12) + 30;
+    data[i + 1] = data[i + 1] * (1 - 0.12) + 24;
+    data[i + 2] = data[i + 2] * (1 - 0.12) + 20;
+  }
+
+  // Halation
+  const halationCanvas = document.createElement('canvas');
+  halationCanvas.width  = out.width;
+  halationCanvas.height = out.height;
+  const halCtx = halationCanvas.getContext('2d');
+  halCtx.putImageData(out, 0, 0);
+  const halData = halCtx.getImageData(0, 0, out.width, out.height);
+  for (let i = 0; i < halData.data.length; i += 4) {
+    const lum = (halData.data[i] * 0.299 + halData.data[i+1] * 0.587 + halData.data[i+2] * 0.114);
+    const mask = Math.max(0, (lum - 180) / 75);
+    halData.data[i]     = halData.data[i]     * mask;
+    halData.data[i + 1] = halData.data[i + 1] * mask * 0.3;
+    halData.data[i + 2] = halData.data[i + 2] * mask * 0.1;
+    halData.data[i + 3] = 255;
+  }
+  halCtx.putImageData(halData, 0, 0);
+  const blurCanvas = document.createElement('canvas');
+  blurCanvas.width  = out.width;
+  blurCanvas.height = out.height;
+  const blurCtx = blurCanvas.getContext('2d');
+  blurCtx.filter = `blur(${Math.max(4, out.width / 150)}px)`;
+  blurCtx.drawImage(halationCanvas, 0, 0);
+  const blurred = blurCtx.getImageData(0, 0, out.width, out.height);
+  const halStrength = 0.6;
+  for (let i = 0; i < data.length; i += 4) {
+    data[i]     = Math.min(255, data[i]     + blurred.data[i]     * halStrength);
+    data[i + 1] = Math.min(255, data[i + 1] + blurred.data[i + 1] * halStrength);
+    data[i + 2] = Math.min(255, data[i + 2] + blurred.data[i + 2] * halStrength);
+  }
+
+  // Grain
+  const grainAmount = 0.08;
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114) / 255;
+    const weight = 1 - Math.abs(lum - 0.5) * 1.2;
+    const noise  = (Math.random() - 0.5) * 2 * grainAmount * weight * 255;
+    data[i]     = Math.min(255, Math.max(0, data[i]     + noise));
+    data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + noise));
+    data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + noise));
+  }
+
+  previewCtx.putImageData(out, 0, 0);
+
+  // Vignette
+  const vignette = previewCtx.createRadialGradient(
+    out.width / 2, out.height / 2, out.height * 0.5,
+    out.width / 2, out.height / 2, out.height * 0.97
+  );
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, 'rgba(0,0,0,0.3)');
+  previewCtx.fillStyle = vignette;
+  previewCtx.fillRect(0, 0, out.width, out.height);
+
+  processingOverlay.style.display = 'none';
+  }, 16);
+ 
+    // ── Export ─────────────────────────────────────────────────
+    exportBtn.addEventListener('click', function() {
+      previewCanvas.toBlob(function(blob) {
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        const base = filenameEl.textContent.replace(/\.[^/.]+$/, '');
+        const preset = currentPreset === 'none' ? 'original' : currentPreset;
+        a.href     = url;
+        a.download = base + '_' + preset + '.jpg';
+        a.click();
+        URL.revokeObjectURL(url);
+      }, 'image/jpeg', 0.95);
+    });
+  }
+  </script>
+</body>
+</html>
+ 
